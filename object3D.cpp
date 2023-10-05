@@ -1,9 +1,16 @@
+// #define DEBUG
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "object3D.h"
 #include "external/upng/upng.h"
+
+#ifdef DEBUG
+#define DEBUG_PRINT(...) printf(__VA_ARGS__)
+#else
+#define DEBUG_PRINT(...) do {} while (0)
+#endif
 
 vec3_t triangleNormal(vec3_t v0, vec3_t v1, vec3_t v2) {
     return crossProduct(sub(v1, v0), sub(v2, v0));
@@ -122,7 +129,7 @@ float meshBoundsRadius(vec3_t* vertices, int numVertices, vec3_t center) {
 }
 
 uint32_t* loadTexture(char* filename, int* textureWidth, int* textureHeight) {
-    printf("DEBUG: Loading texture %s\n", filename);
+    DEBUG_PRINT("DEBUG: Loading texture %s\n", filename);
     uint32_t* texture = NULL;
 
     upng_t* upng = upng_new_from_file(filename);
@@ -137,7 +144,7 @@ uint32_t* loadTexture(char* filename, int* textureWidth, int* textureHeight) {
         *textureWidth = upng_get_width(upng);
         *textureHeight = upng_get_height(upng);
 
-        printf("DEBUG: Texture size %d x %d\n", *textureWidth, *textureHeight);
+        DEBUG_PRINT("DEBUG: Texture size %d x %d\n", *textureWidth, *textureHeight);
         uint32_t* buffer = (uint32_t*) upng_get_buffer(upng);
         texture = (uint32_t*) malloc((*textureWidth) * (*textureHeight) * sizeof(uint32_t));
         if (texture == NULL) {
@@ -158,7 +165,7 @@ uint32_t* loadTexture(char* filename, int* textureWidth, int* textureHeight) {
     }
 
     upng_free(upng);
-    printf("DEBUG: Loaded texture %s\n", filename);
+    DEBUG_PRINT("DEBUG: Loaded texture %s\n", filename);
     return texture;
 }
 
@@ -230,7 +237,7 @@ material_t* loadMtlFile(const char* filename, int* numMaterials) {
             sscanf(line, "map_Kd %s\n", textureFilename);
             char* path = getPath(filename);
             strcat(path, textureFilename);
-            printf("DEBUG: Loading texture %s\n", textureFilename);
+            DEBUG_PRINT("DEBUG: Loading texture %s\n", textureFilename);
             materials[*numMaterials - 1].texture = loadTexture(path, &materials[*numMaterials - 1].textureWidth, &materials[*numMaterials - 1].textureHeight);
         }
     }
@@ -267,7 +274,7 @@ mesh_t* loadObjFile(const char* filename, bool flipTexturesVertically) {
     while (fgets(line, 128, fp) != NULL) {
         if (line[0] == 'o') {
             sscanf(line, "o %s\n", name);
-            printf("DEBUG: Loading object %s.\n", name);
+            DEBUG_PRINT("DEBUG: Loading object %s.\n", name);
         }
 
         if (line[0] == 'v' && line[1] == ' ') {
@@ -309,9 +316,9 @@ mesh_t* loadObjFile(const char* filename, bool flipTexturesVertically) {
             sscanf(line, "mtllib %s\n", mtl_filename);
             char* path = getPath(filename);
             strcat(path, mtl_filename);
-            printf("DEBUG: Loading MTL %s\n", path);
+            DEBUG_PRINT("DEBUG: Loading MTL %s\n", path);
             materials = loadMtlFile(path, &num_materials);
-            printf("DEBUG: Loaded %d materials\n", num_materials);
+            DEBUG_PRINT("DEBUG: Loaded %d materials\n", num_materials);
         }
 
         if (line[0] == 'u' && line[1] == 's' && line[2] == 'e') {
@@ -320,8 +327,8 @@ mesh_t* loadObjFile(const char* filename, bool flipTexturesVertically) {
 
             for (int i = 0; i < num_materials; i++) {
                 if (strcmp(material_name, materials[i].name) == 0) {
-                    printf("DEBUG: Using material %s\n", materials[i].name);
-                    printf("DEBUG: Color %d %d %d\n", materials[i].diffuseColor.r, materials[i].diffuseColor.g, materials[i].diffuseColor.b);
+                    DEBUG_PRINT("DEBUG: Using material %s\n", materials[i].name);
+                    DEBUG_PRINT("DEBUG: Color %d %d %d\n", materials[i].diffuseColor.r, materials[i].diffuseColor.g, materials[i].diffuseColor.b);
                     currentMaterial = i;
                 }
             }
@@ -399,7 +406,7 @@ mesh_t* loadObjFile(const char* filename, bool flipTexturesVertically) {
                     fprintf(stderr, "ERROR: Normal memory couldn't be allocated.\n");
                     exit(-1);
                 }
-                printf("DEBUG: Normal %d: ", num_normals - 1);
+                DEBUG_PRINT("DEBUG: Normal %d: ", num_normals - 1);
                 normals[num_normals - 1] = normal;
                 triangles[num_triangles - 1].n0 = num_normals - 1;
                 triangles[num_triangles - 1].n1 = num_normals - 1;
@@ -451,6 +458,6 @@ mesh_t* loadObjFile(const char* filename, bool flipTexturesVertically) {
     }
     strcpy(mesh->name, name);
     
-    printf("DEBUG: Loaded mesh %s\n", mesh->name);
+    DEBUG_PRINT("DEBUG: Loaded mesh %s\n", mesh->name);
     return mesh;
 }
