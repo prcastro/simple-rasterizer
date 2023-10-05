@@ -50,9 +50,6 @@ typedef struct game_state_t {
     bool          drawFilled;
     bool          diffuseLighting;
     bool          specularLighting;
-    bool          shaded;
-    int           shadingMode;
-    bool          useDepthBuffer;
     bool          backfaceCulling;
     bool          bilinearFiltering;
 
@@ -183,11 +180,9 @@ void drawTriangleFilled(int x0, int x1, int x2,
     int w2_row = edgeCross(x0, y0, x1, y1, x_min, y_min);
 
     // Illuminate each vertex
-    if (game->shaded && !(game->shadingMode == 2)) {
-        c0 = mulScalarColor(i0, c0);
-        c1 = mulScalarColor(i1, c1);
-        c2 = mulScalarColor(i2, c2);
-    }
+    c0 = mulScalarColor(i0, c0);
+    c1 = mulScalarColor(i1, c1);
+    c2 = mulScalarColor(i2, c2);
     
     for (int y = y_min; y <= y_max; y++) {
         bool was_inside = false;
@@ -203,75 +198,63 @@ void drawTriangleFilled(int x0, int x1, int x2,
                 float beta  = w1 * invArea;
                 float gamma = w2 * invArea;
 
-                if (game->useDepthBuffer || game->shaded) { // Only interpolate z if we are going to use it
-                    float invz = alpha * invz0 + beta * invz1 + gamma * invz2;
-                    if (invz > game->depthBuffer[y * WIDTH + x]) {
-                        uint32_t color = colorToUint32(c0); // Fallback in case of no texture and no shading
-                        float light = 1;
+                
+                float invz = alpha * invz0 + beta * invz1 + gamma * invz2;
+                if (invz > game->depthBuffer[y * WIDTH + x]) {
+                    uint32_t color = colorToUint32(c0); // Fallback in case of no texture and no shading
+                    float light = alpha * i0 + beta * i1 + gamma * i2;
 
-                        if (game->shadingMode == 2) { // phong shading
-                            point_t p = {x, y, invz};
-                            vec3_t v = mulMV3(invCameraTransform, unprojectPoint(p));
-                            vec3_t normal = add(add(mulScalarV3(alpha, n0), mulScalarV3(beta, n1)), mulScalarV3(gamma, n2));
-                            light = shadeVertex(v, normal , 1/magnitude(normal), specularExponent, game);
-                        } else if (game->shaded) {
-                            light = alpha * i0 + beta * i1 + gamma * i2;
+                    if (textureWidth != 0 && textureHeight != 0) {
+                        // Interpolate u/z and v/z to get perspective correct texture coordinates
+                        float u_over_z = alpha * (t0.x * invz0) + beta * (t1.x * invz1) + gamma * (t2.x * invz2);
+                        float v_over_z = alpha * (t0.y * invz0) + beta * (t1.y * invz1) + gamma * (t2.y * invz2);
+                        color_t color_typed;
+                        // TODO: Fix crash when we have overflow here
+                        if (game->bilinearFiltering) {
+                            float tex_u = u_over_z/invz;
+                            if (tex_u < 0) {
+                                tex_u = 1 + tex_u;
+                            }
+                            tex_u = MIN(tex_u * textureWidth, textureWidth - 1);
+
+                            float tex_v = v_over_z/invz;
+                            if (tex_v < 0) {
+                                tex_v = 1 + tex_v;
+                            }
+                            tex_v = MIN(tex_v * textureHeight, textureHeight - 1);
+
+                            int floor_u = floor(tex_u);
+                            int floor_v = floor(tex_v);
+                            int next_u = MIN(floor_u + 1, textureWidth - 1);
+                            int next_v = MIN(floor_v + 1, textureHeight - 1);
+                            float frac_u = tex_u - floor_u;
+                            float frac_v = tex_v - floor_v;
+                            color_t color_tl = colorFromUint32(texture[floor_v * textureWidth + floor_u]);
+                            color_t color_tr = colorFromUint32(texture[floor_v * textureWidth + next_u]);
+                            color_t color_bl = colorFromUint32(texture[next_v * textureWidth + floor_u]);
+                            color_t color_br = colorFromUint32(texture[next_v * textureWidth + next_u]);
+                            color_t color_b = sumColors(mulScalarColor(1 - frac_u, color_bl), mulScalarColor(frac_u, color_br));
+                            color_t color_tp = sumColors(mulScalarColor(1 - frac_u, color_tl), mulScalarColor(frac_u, color_tr));
+                            color_typed = sumColors(mulScalarColor(1 - frac_v, color_b), mulScalarColor(frac_v, color_tp));
+                        } else {
+                            int tex_x = MIN(abs((int)((u_over_z/invz) * textureWidth)), textureWidth - 1);
+                            int tex_y = MIN(abs((int)((v_over_z/invz) * textureHeight)), textureHeight - 1);
+                            color_typed = colorFromUint32(texture[tex_y * textureWidth + tex_x]);
                         }
                         
-                        if (textureWidth != 0 && textureHeight != 0) {
-                            // Interpolate u/z and v/z to get perspective correct texture coordinates
-                            float u_over_z = alpha * (t0.x * invz0) + beta * (t1.x * invz1) + gamma * (t2.x * invz2);
-                            float v_over_z = alpha * (t0.y * invz0) + beta * (t1.y * invz1) + gamma * (t2.y * invz2);
-                            color_t color_typed;
-                            // TODO: Fix crash when we have overflow here
-                            if (game->bilinearFiltering) {
-                                float tex_u = u_over_z/invz;
-                                if (tex_u < 0) {
-                                    tex_u = 1 + tex_u;
-                                }
-                                tex_u = MIN(tex_u * textureWidth, textureWidth - 1);
-
-                                float tex_v = v_over_z/invz;
-                                if (tex_v < 0) {
-                                    tex_v = 1 + tex_v;
-                                }
-                                tex_v = MIN(tex_v * textureHeight, textureHeight - 1);
-
-                                int floor_u = floor(tex_u);
-                                int floor_v = floor(tex_v);
-                                int next_u = MIN(floor_u + 1, textureWidth - 1);
-                                int next_v = MIN(floor_v + 1, textureHeight - 1);
-                                float frac_u = tex_u - floor_u;
-                                float frac_v = tex_v - floor_v;
-                                color_t color_tl = colorFromUint32(texture[floor_v * textureWidth + floor_u]);
-                                color_t color_tr = colorFromUint32(texture[floor_v * textureWidth + next_u]);
-                                color_t color_bl = colorFromUint32(texture[next_v * textureWidth + floor_u]);
-                                color_t color_br = colorFromUint32(texture[next_v * textureWidth + next_u]);
-                                color_t color_b = sumColors(mulScalarColor(1 - frac_u, color_bl), mulScalarColor(frac_u, color_br));
-                                color_t color_tp = sumColors(mulScalarColor(1 - frac_u, color_tl), mulScalarColor(frac_u, color_tr));
-                                color_typed = sumColors(mulScalarColor(1 - frac_v, color_b), mulScalarColor(frac_v, color_tp));
-                            } else {
-                                int tex_x = MIN(abs((int)((u_over_z/invz) * textureWidth)), textureWidth - 1);
-                                int tex_y = MIN(abs((int)((v_over_z/invz) * textureHeight)), textureHeight - 1);
-                                color_typed = colorFromUint32(texture[tex_y * textureWidth + tex_x]);
-                            }
-                            
-                            color_t color_shaded = mulScalarColor(light, color_typed);
-                            color = colorToUint32(color_shaded);
-                        } else if (game->shaded) {
-                            color_t color_typed = {
-                                static_cast<uint8_t>(c0.r * alpha + c1.r * beta + c2.r * gamma),
-                                static_cast<uint8_t>(c0.g * alpha + c1.g * beta + c2.g * gamma),
-                                static_cast<uint8_t>(c0.b * alpha + c1.b * beta + c2.b * gamma)
-                            };
-                            color_t color_shaded = mulScalarColor(light, color_typed);
-                            color = colorToUint32(color_shaded);
-                        }
-
-                        drawPixelDepthBuffer(x, y, invz, color, game->depthBuffer, game->frameBuffer);
+                        color_t color_shaded = mulScalarColor(light, color_typed);
+                        color = colorToUint32(color_shaded);
+                    } else {
+                        color_t color_typed = {
+                            static_cast<uint8_t>(c0.r * alpha + c1.r * beta + c2.r * gamma),
+                            static_cast<uint8_t>(c0.g * alpha + c1.g * beta + c2.g * gamma),
+                            static_cast<uint8_t>(c0.b * alpha + c1.b * beta + c2.b * gamma)
+                        };
+                        color_t color_shaded = mulScalarColor(light, color_typed);
+                        color = colorToUint32(color_shaded);
                     }
-                } else {
-                    drawPixel(x, y, colorToUint32(c0), game->frameBuffer);
+
+                    drawPixelDepthBuffer(x, y, invz, color, game->depthBuffer, game->frameBuffer);
                 }
             }
 
@@ -375,44 +358,28 @@ void drawObject(object3D_t* object, game_state_t* game) {
         }
 
         if (!discarded) {
-            float i0 = 1.0;
-            float i1 = 1.0;
-            float i2 = 1.0;
+            color_t color = COLOR_WHITE;
+            float specularExponent = 900.0f;
 
-            // Shading
-            if (game->shaded && game->shadingMode == 0) {
-                // Flat shading
-                vec3_t v0 = transformed[triangle.v0];
-                vec3_t v1 = transformed[triangle.v1];
-                vec3_t v2 = transformed[triangle.v2];
-                vec3_t normal = triangleNormal(v0, v1, v2);
-                float invMag = 1.0f / magnitude(normal);
-                vec3_t center = {(v0.x + v1.x + v2.x)/3.0f, (v0.y + v1.y + v2.y)/3.0f, (v0.z + v1.z + v2.z)/3.0f};
-                float intensity = shadeVertex(center, normal, invMag, materials[triangle.materialIndex].specularExponent, game);
-                i0 = intensity;
-                i1 = intensity;
-                i2 = intensity;
-            } else if (game->shaded && game->shadingMode == 1) {
-                // Gouraud shading
-                float specularExponent = 900.0f;
-                if (mesh->numMaterials != 0) {
-                    specularExponent = materials[triangle.materialIndex].specularExponent;
-                }
-
-                i0 = shadeVertex(transformed[triangle.v0], transformedNormals[triangle.n0], mesh->invMagnitudeNormals[triangle.n0], specularExponent, game);
-                i1 = shadeVertex(transformed[triangle.v1], transformedNormals[triangle.n1], mesh->invMagnitudeNormals[triangle.n1], specularExponent, game);
-                i2 = shadeVertex(transformed[triangle.v2], transformedNormals[triangle.n2], mesh->invMagnitudeNormals[triangle.n2], specularExponent, game);
+            if (mesh->numMaterials != 0) {
+                color = materials[triangle.materialIndex].diffuseColor;
+                specularExponent = materials[triangle.materialIndex].specularExponent;
             }
 
-            // Drawing
+            // Draw wireframe
             if (game->drawWire) {
                 drawTriangleWireframe(p0.x, p1.x, p2.x,
                                       p0.y, p1.y, p2.y,
-                                      materials[triangle.materialIndex].diffuseColor,
+                                      color,
                                       game->frameBuffer);
             }
             
             if (game->drawFilled) {
+                // Gouraud shading
+                float i0 = shadeVertex(transformed[triangle.v0], transformedNormals[triangle.n0], mesh->invMagnitudeNormals[triangle.n0], specularExponent, game);
+                float i1 = shadeVertex(transformed[triangle.v1], transformedNormals[triangle.n1], mesh->invMagnitudeNormals[triangle.n1], specularExponent, game);
+                float i2 = shadeVertex(transformed[triangle.v2], transformedNormals[triangle.n2], mesh->invMagnitudeNormals[triangle.n2], specularExponent, game);
+
                 vec3_t t0 = {0};
                 vec3_t t1 = {0};
                 vec3_t t2 = {0};
@@ -426,14 +393,6 @@ void drawObject(object3D_t* object, game_state_t* game) {
                     textureWidth = materials[triangle.materialIndex].textureWidth;
                     textureHeight = materials[triangle.materialIndex].textureHeight;
                     texture = materials[triangle.materialIndex].texture;
-                }
-                
-                color_t color = COLOR_WHITE;
-                float specularExponent = 900.0f;
-
-                if (mesh->numMaterials != 0) {
-                    color = materials[triangle.materialIndex].diffuseColor;
-                    specularExponent = materials[triangle.materialIndex].specularExponent;
                 }
                 
                 drawTriangleFilled(p0.x, p1.x, p2.x,
@@ -464,13 +423,10 @@ void drawObjects(game_state_t* game) {
     }
 }
 
-// TODO: This is a huge hack, we should have a proper way to solve shading in this case
+// TODO: Hide lights?
 void drawLights(game_state_t* game) {
     for (int i = 0; i < game->numPointLights; i++) {
-        bool shadedBackup = game->shaded;
-        game->shaded = false; 
         drawObject(&game->pointLightObjects[i], game);
-        game->shaded = shadedBackup;
     }
 }
 
@@ -620,9 +576,6 @@ game_state_t* init() {
     game->specularLighting = true;
     game->drawWire = false;
     game->drawFilled = true;
-    game->shaded = true;
-    game->shadingMode = 1;
-    game->useDepthBuffer = true;
     game->backfaceCulling = true;
     game->bilinearFiltering = false;
     game->numMeshes = numMeshes;
@@ -718,64 +671,49 @@ void updateDebugUI(game_state_t *game) {
 
         if (ImGui::CollapsingHeader("Lights")) {
             ImGui::Indent(20.0f);
-            ImGui::Checkbox("Shaded", &game->shaded);
 
-            if (game->shaded) {
-                if (ImGui::RadioButton("Flat", game->shadingMode == 0)) {
-                game->shadingMode = 0;
-                }
-                ImGui::SameLine();
-                if (ImGui::RadioButton("Gouraud", game->shadingMode == 1)) {
-                    game->shadingMode = 1;
-                }
-                ImGui::SameLine();
-                if (ImGui::RadioButton("Phong", game->shadingMode == 2)) {
-                    game->shadingMode = 2;
-                }
-
-                ImGui::Checkbox("Difuse", &game->diffuseLighting);
-                ImGui::SameLine();
-                ImGui::Checkbox("Specular", &game->specularLighting);
+            ImGui::Checkbox("Difuse", &game->diffuseLighting);
+            ImGui::SameLine();
+            ImGui::Checkbox("Specular", &game->specularLighting);
 
 
-                if (ImGui::CollapsingHeader("Ambient")) {
-                    ImGui::Indent(20.0f);
-                    for (int i = 0; i < game->numAmbientLights; i++) {
-                        ImGui::PushID(i);
-                        ImGui::Text("Ambient Light %d", i);
-                        ImGui::SliderFloat("Intensity##amb", &game->ambientLights[i].intensity, 0.0f, 3.0f);
-                        ImGui::PopID();
-                    }
-                    ImGui::Unindent(20.0f);
+            if (ImGui::CollapsingHeader("Ambient")) {
+                ImGui::Indent(20.0f);
+                for (int i = 0; i < game->numAmbientLights; i++) {
+                    ImGui::PushID(i);
+                    ImGui::Text("Ambient Light %d", i);
+                    ImGui::SliderFloat("Intensity##amb", &game->ambientLights[i].intensity, 0.0f, 3.0f);
+                    ImGui::PopID();
                 }
+                ImGui::Unindent(20.0f);
+            }
 
-                if (ImGui::CollapsingHeader("Directional")) {
-                    ImGui::Indent(20.0f);
-                    for (int i = 0; i < game->numDirectionalLights; i++) {
-                        ImGui::PushID(i);
-                        ImGui::Text("Directional Light %d", i);
-                        ImGui::SliderFloat("Intensity", &game->directionalLights[i].intensity, 0.0f, 3.0f);
-                        ImGui::SliderFloat("x", &game->directionalLights[i].direction.x, -1.0f, 1.0f);
-                        ImGui::SliderFloat("y", &game->directionalLights[i].direction.y, -1.0f, 1.0f);
-                        ImGui::SliderFloat("z", &game->directionalLights[i].direction.z, -1.0f, 1.0f);
-                        ImGui::PopID();
-                    }
-                    ImGui::Unindent(20.0f);
+            if (ImGui::CollapsingHeader("Directional")) {
+                ImGui::Indent(20.0f);
+                for (int i = 0; i < game->numDirectionalLights; i++) {
+                    ImGui::PushID(i);
+                    ImGui::Text("Directional Light %d", i);
+                    ImGui::SliderFloat("Intensity", &game->directionalLights[i].intensity, 0.0f, 3.0f);
+                    ImGui::SliderFloat("x", &game->directionalLights[i].direction.x, -1.0f, 1.0f);
+                    ImGui::SliderFloat("y", &game->directionalLights[i].direction.y, -1.0f, 1.0f);
+                    ImGui::SliderFloat("z", &game->directionalLights[i].direction.z, -1.0f, 1.0f);
+                    ImGui::PopID();
                 }
+                ImGui::Unindent(20.0f);
+            }
 
-                if (ImGui::CollapsingHeader("Point")) {
-                    ImGui::Indent(20.0f);
-                    for (int i = 0; i < game->numPointLights; i++) {
-                        ImGui::PushID(i);
-                        ImGui::Text("Point Light %d", i);
-                        ImGui::SliderFloat("Intensity##p", &game->pointLights[i].intensity, 0.0f, 3.0f);
-                        ImGui::SliderFloat("x##p", &game->pointLights[i].position.x, -10.0f, 10.0f);
-                        ImGui::SliderFloat("y##p", &game->pointLights[i].position.y, -10.0f, 10.0f);
-                        ImGui::SliderFloat("z##p", &game->pointLights[i].position.z, -10.0f, 10.0f);
-                        ImGui::PopID();
-                    }
-                    ImGui::Unindent(20.0f);
+            if (ImGui::CollapsingHeader("Point")) {
+                ImGui::Indent(20.0f);
+                for (int i = 0; i < game->numPointLights; i++) {
+                    ImGui::PushID(i);
+                    ImGui::Text("Point Light %d", i);
+                    ImGui::SliderFloat("Intensity##p", &game->pointLights[i].intensity, 0.0f, 3.0f);
+                    ImGui::SliderFloat("x##p", &game->pointLights[i].position.x, -10.0f, 10.0f);
+                    ImGui::SliderFloat("y##p", &game->pointLights[i].position.y, -10.0f, 10.0f);
+                    ImGui::SliderFloat("z##p", &game->pointLights[i].position.z, -10.0f, 10.0f);
+                    ImGui::PopID();
                 }
+                ImGui::Unindent(20.0f);
             }
             ImGui::Unindent(20.0f);
         }
@@ -794,8 +732,6 @@ void updateDebugUI(game_state_t *game) {
             ImGui::Checkbox("Wireframe", &game->drawWire);
             ImGui::SameLine();
             ImGui::Checkbox("Filled", &game->drawFilled);
-            ImGui::Checkbox("zBuffer", &game->useDepthBuffer);
-            ImGui::SameLine();
             ImGui::Checkbox("Culling", &game->backfaceCulling);
             ImGui::SameLine();
             ImGui::Checkbox("Bilinear Filt.", &game->bilinearFiltering);
