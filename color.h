@@ -22,7 +22,8 @@ inline uint32_t colorToUint32(color_t c) {
     return 0x00000000 | (c.r << 16) | (c.g << 8) |  c.b;    
 }
 
-color_t colorFromUint32(uint32_t c);
+color_t colorFromUint32ARGB(uint32_t c);
+color_t colorFromUint32RGBA(uint32_t c);
 inline float clamp(float v, float max) {
     return v > max ? max : v;
 }

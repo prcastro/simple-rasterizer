@@ -1,18 +1,27 @@
 // #define DEBUG
 #define DEBUGUI
+
+// Standard
+#include <math.h>
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+// External
 #define SDL_MAIN_HANDLED
+#include <SDL.h>
+#define CGLTF_IMPLEMENTATION
+#include "external/cgltf/cgltf.h"
+#define STB_IMAGE_IMPLEMENTATION
+#include "external/stb/stb_image.h"
 #ifdef DEBUGUI
 #include "external/imgui/imgui.h"
 #include "external/imgui/imgui_impl_sdl2.h"
 #include "external/imgui/imgui_impl_sdlrenderer.h"
 #endif // DEBUGUI
 
-#include <SDL.h>
-#include <math.h>
-#include <assert.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
+// Local
 #include "color.h"
 #include "vectors.h"
 #include "object3D.h"
@@ -65,6 +74,10 @@ typedef struct game_state_t {
     int              numPointLights;
     point_light_t*   pointLights;
     object3D_t*      pointLightObjects;
+
+    // GLTF
+    cgltf_data* gltfData;
+    char*       gltfPath;
 
     // Camera
     camera_t     camera;
@@ -229,17 +242,18 @@ void drawTriangleFilled(int x0, int x1, int x2,
                             int next_v = MIN(floor_v + 1, textureHeight - 1);
                             float frac_u = tex_u - floor_u;
                             float frac_v = tex_v - floor_v;
-                            color_t color_tl = colorFromUint32(texture[floor_v * textureWidth + floor_u]);
-                            color_t color_tr = colorFromUint32(texture[floor_v * textureWidth + next_u]);
-                            color_t color_bl = colorFromUint32(texture[next_v * textureWidth + floor_u]);
-                            color_t color_br = colorFromUint32(texture[next_v * textureWidth + next_u]);
+                            color_t color_tl = colorFromUint32RGBA(texture[floor_v * textureWidth + floor_u]);
+                            color_t color_tr = colorFromUint32RGBA(texture[floor_v * textureWidth + next_u]);
+                            color_t color_bl = colorFromUint32RGBA(texture[next_v * textureWidth + floor_u]);
+                            color_t color_br = colorFromUint32RGBA(texture[next_v * textureWidth + next_u]);
                             color_t color_b = sumColors(mulScalarColor(1 - frac_u, color_bl), mulScalarColor(frac_u, color_br));
                             color_t color_tp = sumColors(mulScalarColor(1 - frac_u, color_tl), mulScalarColor(frac_u, color_tr));
                             color_typed = sumColors(mulScalarColor(1 - frac_v, color_b), mulScalarColor(frac_v, color_tp));
                         } else {
                             int tex_x = MIN(abs((int)((u_over_z/invz) * textureWidth)), textureWidth - 1);
                             int tex_y = MIN(abs((int)((v_over_z/invz) * textureHeight)), textureHeight - 1);
-                            color_typed = colorFromUint32(texture[tex_y * textureWidth + tex_x]);
+                            uint32_t color_uint32 = texture[tex_y * textureWidth + tex_x];
+                            color_typed = colorFromUint32RGBA(color_uint32);
                         }
                         
                         color_t color_shaded = mulScalarColor(light, color_typed);
@@ -423,6 +437,299 @@ void drawObjects(game_state_t* game) {
     }
 }
 
+uint32_t* loadTextureSTB(char* path, int* width, int* height) {
+    int channels;
+    uint8_t* texture = stbi_load(path, width, height, &channels, 4);
+    if (texture == NULL) {
+        fprintf(stderr, "ERROR: Couldn't load texture %s\n", path);
+        exit(-1);
+    }
+
+    printf("DEBUG: Texture %s loaded with size %dx%d\n", path, *width, *height);
+    // Print if the texture is 16 or 8 bit depth
+    bool is_16_bit = stbi_is_16_bit(path);
+    if (is_16_bit) {
+        printf("DEBUG: Texture %s is 16 bit depth\n", path);
+    } else {
+        printf("DEBUG: Texture %s is 8 bit depth\n", path);
+    }
+    return (uint32_t*) texture;
+}
+
+float wrapOver(float input, float max) {
+    float modResult = fmod(input, max);
+    if (modResult == 0) {
+        // Check if the number of wraps is even or odd
+        int numWraps = input / max;
+        return (numWraps % 2 == 0) ? 0 : max;
+    }
+    return modResult;
+}
+
+void renderPrimitive(cgltf_accessor* indicesAccessor, cgltf_accessor* positionAccessor, cgltf_accessor* normalAccessor, cgltf_accessor* texcoordAccessor, cgltf_material* material, game_state_t* game) {
+    camera_t camera = game->camera;
+
+    cgltf_size indicesCount = indicesAccessor->count;
+    printf("DEBUG: Rendering %d triangles\n", (int) indicesCount / 3);
+    for (int i=0; i<indicesCount; i+=3) {
+        // TODO: remove this
+        if (i/3 != 3) {
+            // continue;
+        }
+
+        printf("DEBUG: Rendering triangle %d\n", i/3);
+
+        uint16_t idx2 = cgltf_accessor_read_index(indicesAccessor, i);
+        uint16_t idx1 = cgltf_accessor_read_index(indicesAccessor, i + 1);
+        uint16_t idx0 = cgltf_accessor_read_index(indicesAccessor, i + 2);
+        printf("DEBUG: Indexes %d, %d, %d\n", idx0, idx1, idx2);
+
+        // Vertices
+        vec3_t v0;
+        vec3_t v1;
+        vec3_t v2;
+        bool res1 = cgltf_accessor_read_float(positionAccessor, idx0, &v0.x, 3);
+        bool res2 = cgltf_accessor_read_float(positionAccessor, idx1, &v1.x, 3);
+        bool res3 = cgltf_accessor_read_float(positionAccessor, idx2, &v2.x, 3);
+        if (!res1 || !res2 || !res3) {
+            fprintf(stderr, "ERROR: Couldn't read vertex data\n");
+            exit(-1);
+        }
+
+        v0.z = -v0.z;
+        v1.z = -v1.z;
+        v2.z = -v2.z;
+
+        printf("DEBUG: Vertices\n");
+        printf("DEBUG: v0: %f, %f, %f\n", v0.x, v0.y, v0.z);
+        printf("DEBUG: v1: %f, %f, %f\n", v1.x, v1.y, v1.z);
+        printf("DEBUG: v2: %f, %f, %f\n", v2.x, v2.y, v2.z);
+        
+        // Normals
+        vec3_t n0 = normalize(crossProduct(sub(v1, v0), sub(v2, v0)));;
+        vec3_t n1 = n0;
+        vec3_t n2 = n0;
+        if (normalAccessor != NULL) {
+            // TODO: Check type and component type of normal
+            bool res1 = cgltf_accessor_read_float(normalAccessor, idx0, &n0.x, 3);
+            bool res2 = cgltf_accessor_read_float(normalAccessor, idx1, &n1.x, 3);
+            bool res3 = cgltf_accessor_read_float(normalAccessor, idx2, &n2.x, 3);
+            if (!res1 || !res2 || !res3) {
+                fprintf(stderr, "ERROR: Couldn't read normal data\n");
+                exit(-1);
+            }
+
+            n0.z = -n0.z;
+            n1.z = -n1.z;
+            n2.z = -n2.z;
+        }
+
+        // START HERE:
+        //    Texture coords are messed up in the sides of the cube
+        printf("DEBUG: Getting textures\n");
+        vec3_t t0 = {0};
+        vec3_t t1 = {0};
+        vec3_t t2 = {0};
+        if (texcoordAccessor != NULL) {
+            bool res1 = cgltf_accessor_read_float(texcoordAccessor, idx0, &t0.x, 2);
+            bool res2 = cgltf_accessor_read_float(texcoordAccessor, idx1, &t1.x, 2);
+            bool res3 = cgltf_accessor_read_float(texcoordAccessor, idx2, &t2.x, 2);
+
+            if (!res1 || !res2 || !res3) {
+                fprintf(stderr, "ERROR: Couldn't read texture data\n");
+                exit(-1);
+            }
+
+            printf("DEBUG: Textures before transform\n");
+            printf("DEBUG: t0: %f, %f\n", t0.x, t0.y);
+            printf("DEBUG: t1: %f, %f\n", t1.x, t1.y);
+            printf("DEBUG: t2: %f, %f\n", t2.x, t2.y);
+
+            t0.x = wrapOver(t0.x, 1.0f);
+            t1.x = wrapOver(t1.x, 1.0f);
+            t2.x = wrapOver(t2.x, 1.0f);
+
+            t0.y = wrapOver(t0.y, 1.0f);
+            t1.y = wrapOver(t1.y, 1.0f);
+            t2.y = wrapOver(t2.y, 1.0f);
+
+            // t0.x = 1.0f - t0.x;
+            // t1.x = 1.0f - t1.x;
+            // t2.x = 1.0f - t2.x;
+
+            // t0.y = 1.0f - t0.y;
+            // t1.y = 1.0f - t1.y;
+            // t2.y = 1.0f - t2.y;
+        }
+
+        printf("DEBUG: Textures\n");
+        printf("DEBUG: t0: %f, %f\n", t0.x, t0.y);
+        printf("DEBUG: t1: %f, %f\n", t1.x, t1.y);
+        printf("DEBUG: t2: %f, %f\n", t2.x, t2.y);
+
+        // Transform and project vertices
+        vec3_t transformedV0 = v0; // mulMV3(object->transform, mesh->vertices[i]);
+        vec3_t camTransformedV0 = mulMV3(camera.transform, transformedV0);
+        point_t p0 = projectVertex(camTransformedV0);
+
+        vec3_t transformedV1 = v1; // mulMV3(object->transform, mesh->vertices[i]);
+        vec3_t camTransformedV1 = mulMV3(camera.transform, transformedV1);
+        point_t p1 = projectVertex(camTransformedV1);
+
+        vec3_t transformedV2 = v2; // mulMV3(object->transform, mesh->vertices[i]);
+        vec3_t camTransformedV2 = mulMV3(camera.transform, transformedV2);
+        point_t p2 = projectVertex(camTransformedV2);
+
+        // Transform normals
+        vec3_t transformedN0 = n0; // mulMV3(object->transform, mesh->vertices[i]);
+        vec3_t transformedN1 = n1; // mulMV3(object->transform, mesh->vertices[i]);
+        vec3_t transformedN2 = n2; // mulMV3(object->transform, mesh->vertices[i]);
+
+
+        // Backface culling
+        // printf("DEBUG: Backface culling\n");
+        int area = edgeCross(p0.x, p0.y, p1.x, p1.y, p2.x, p2.y);
+        if (area < 0 && game->backfaceCulling) {
+            printf("DEBUG: Clipped a triangle with backface culling\n");
+            continue;
+        }
+
+        // Fustrum culling
+        // TODO: Add config for this
+        bool discarded = false;
+        for (int p = 0; p < camera.numPlanes; p++) {
+            plane_t plane = camera.planes[p];
+            if (distancePlaneV3(plane, camTransformedV0) < 0 &&
+                distancePlaneV3(plane, camTransformedV1) < 0 &&
+                distancePlaneV3(plane, camTransformedV2) < 0) {
+                    printf("DEBUG: Clipped triangle fully outside of the camera clipping volume\n");
+                    discarded = true;
+                    break;
+            }
+
+            // TODO: Deal with the case where only one or two vertexes of the triangle
+            //       are out of the volume. In this case, we should split the triangle
+            //       and create new ones.
+        }
+
+        if (discarded) {
+            continue;
+        }
+
+        // Clip the triangle has any vertice behind the camera
+        // printf("DEBUG: Camera culling\n");
+        // TODO: Check if this is right, but it fixes overflows when we
+        //       interpolate zs and we have z close to 0
+        if (camTransformedV0.z < 0 ||
+            camTransformedV1.z < 0 ||
+            camTransformedV2.z < 0) {
+            printf("DEBUG: Clipped triangle with a vertice behind the camera\n");
+            continue;
+        }
+
+        // Material
+        printf("DEBUG: Material\n");
+        color_t color = COLOR_WHITE;
+        if (material->has_pbr_metallic_roughness && material->pbr_metallic_roughness.base_color_factor != NULL) {
+            color = colorFromFloats(material->pbr_metallic_roughness.base_color_factor[0],
+                                    material->pbr_metallic_roughness.base_color_factor[1],
+                                    material->pbr_metallic_roughness.base_color_factor[2]);
+        }
+
+        printf("Load texture\n");
+        // Texture
+        int textureWidth = 0;
+        int textureHeight = 0;
+        uint32_t* texture = NULL;
+        if (material->has_pbr_metallic_roughness && material->pbr_metallic_roughness.base_color_texture.texture != NULL) {
+            cgltf_image* image = material->pbr_metallic_roughness.base_color_texture.texture->image;
+            // Load texture from PNG based on image uri using upng
+            char *texturePath = (char*) malloc(strlen(game->gltfPath) + strlen(image->uri) + 1);
+            if (texturePath == NULL) {
+                fprintf(stderr, "ERROR: Texture path memory couldn't be allocated.\n");
+                exit(-1);
+            }
+            strcpy(texturePath, game->gltfPath);
+            strcat(texturePath, image->uri);
+
+            printf("DEBUG: Loading texture from %s\n", texturePath);
+            texture = loadTextureSTB(texturePath, &textureWidth, &textureHeight);
+        }
+
+        float specularExponent = 900.0f;
+
+        // printf("DEBUG: Vertex shading\n");
+        float i0 = shadeVertex(transformedV0, transformedN0, 1.0/magnitude(n0), specularExponent, game);
+        float i1 = shadeVertex(transformedV1, transformedN1, 1.0/magnitude(n1), specularExponent, game);
+        float i2 = shadeVertex(transformedV2, transformedN2, 1.0/magnitude(n2), specularExponent, game);
+
+        drawTriangleWireframe(p0.x, p1.x, p2.x,
+                              p0.y, p1.y, p2.y,
+                              COLOR_WHITE,
+                              game->frameBuffer);
+
+        // Drawing
+        // printf("DEBUG: Drawing triangle\n");
+        drawTriangleFilled(p0.x, p1.x, p2.x,
+                           p0.y, p1.y, p2.y,
+                           p0.invz, p1.invz, p2.invz,
+                           i0, i1, i2,
+                           transformedN0, transformedN1, transformedN2,
+                           t0, t1, t2,
+                           color, color, color,
+                           specularExponent,
+                           texture, textureWidth, textureHeight,
+                           inverseM4(camera.transform),
+                           area,
+                           game);
+    }
+}
+
+void renderMesh(cgltf_mesh* mesh, game_state_t* game) {
+    if (mesh == NULL) {
+        return;
+    }
+
+    printf("DEBUG: Rendering mesh %s\n", mesh->name);
+    for (int i = 0; i < mesh->primitives_count; i++) {
+        cgltf_primitive* primitive = &mesh->primitives[i];
+        printf("DEBUG: Rendering primitive %d with %d attributes\n", i, (int) primitive->attributes_count);
+        cgltf_accessor* positionAccessor = NULL;
+        cgltf_accessor* normalAccessor = NULL;
+        cgltf_accessor* texcoordAccessor = NULL;
+        cgltf_accessor* indicesAccessor = primitive->indices;
+        cgltf_material* material = primitive->material;
+        for (int j = 0; j < primitive->attributes_count; j++) {
+            printf("DEBUG: Getting attribute %d accessor\n", j);
+            cgltf_attribute* attribute = &primitive->attributes[j];
+            if (attribute->type == cgltf_attribute_type_position) {
+                positionAccessor = attribute->data;
+            } else if (attribute->type == cgltf_attribute_type_normal) {
+                normalAccessor = attribute->data;
+            } else if (attribute->type == cgltf_attribute_type_texcoord) {
+                texcoordAccessor = attribute->data;
+            }
+        }
+        renderPrimitive(indicesAccessor, positionAccessor, normalAccessor, texcoordAccessor, material, game);
+    }
+}
+
+void renderScene(game_state_t* game) {
+    printf("DEBUG: Rendering GLTF scene\n");
+    cgltf_scene* scene = game->gltfData->scene;
+    // Render each node in the scene
+    for (int i = 0; i < scene->nodes_count; i++) {
+        cgltf_node* node = scene->nodes[i];
+        printf("DEBUG: Rendering node %s\n", node->name);
+        renderMesh(node->mesh, game);
+
+        for (int i = 0; i < node->children_count; i++) {
+            cgltf_node* child = node->children[i];
+            renderMesh(child->mesh, game);
+        }
+    }
+}
+
 // TODO: Hide lights?
 void drawLights(game_state_t* game) {
     for (int i = 0; i < game->numPointLights; i++) {
@@ -550,6 +857,57 @@ game_state_t* init() {
 
     pointLightObjects[0] = makeObject(&meshes[0], pointLights[0].position, 0.05, IDENTITY_M4x4);
 
+    DEBUG_PRINT("INFO: Loading GLTF scene\n");
+    cgltf_data* gltfData = NULL;
+    char *gltfPath = "assets/scenes/boxtextured/";
+    char *gltfFilename = "BoxTextured.gltf";
+    char *gltfFullPath = (char*) malloc(strlen(gltfPath) + strlen(gltfFilename) + 1);
+    if (gltfFullPath == NULL) {
+        fprintf(stderr, "ERROR: GLTF scene memory couldn't be allocated.\n");
+        exit(-1);
+    }
+    strcpy(gltfFullPath, gltfPath);
+    strcat(gltfFullPath, gltfFilename);
+
+    cgltf_options options = {0};
+    cgltf_result result = cgltf_parse_file(&options, gltfFullPath, &gltfData);
+    if (result != cgltf_result_success) {
+        fprintf(stderr, "ERROR: Couldn't load GLTF scene\n");
+        exit(-1);
+    }
+    result = cgltf_load_buffers(&options, gltfData, gltfPath);
+    if (result != cgltf_result_success) {
+        fprintf(stderr, "ERROR: Couldn't load GLTF scene buffers\n");
+        exit(-1);
+    }
+    result = cgltf_validate(gltfData);
+    if (result != cgltf_result_success) {
+        fprintf(stderr, "ERROR: Couldn't validate GLTF scene\n");
+        exit(-1);
+    }
+
+    // Print some GLTF info
+    printf("INFO: GLTF scene loaded\n");
+    printf("INFO: GLTF file copywright: %s\n", gltfData->asset.copyright);
+    printf("INFO: GLTF file has %d scenes\n", (int) gltfData->scenes_count);
+    printf("INFO: GLTF default scene is scene number %d (%s)\n", (int) (gltfData->scene - gltfData->scenes), gltfData->scene->name);
+    printf("INFO: GLTF file has %d nodes\n", (int) gltfData->nodes_count);
+    for (int i = 0; i < gltfData->nodes_count; i++) {
+        printf("INFO: GLTF node %d (%s) has %d children\n", i, gltfData->nodes[i].name, (int) gltfData->nodes[i].children_count);
+    }
+    printf("INFO: GLTF file has %d meshes\n", (int) gltfData->meshes_count);
+    printf("INFO: GLTF file has %d materials\n", (int) gltfData->materials_count);
+    printf("INFO: GLTF file has %d cameras\n", (int) gltfData->cameras_count);
+    printf("INFO: GLTF file has %d lights\n", (int) gltfData->lights_count);
+    printf("INFO: GLTF file has %d images\n", (int) gltfData->images_count);
+    printf("INFO: GLTF file has %d textures\n", (int) gltfData->textures_count);
+    printf("INFO: GLTF file has %d buffers\n", (int) gltfData->buffers_count);
+    printf("INFO: GLTF file has %d samplers\n", (int) gltfData->samplers_count);
+    printf("INFO: GLTF file has %d skins\n", (int) gltfData->skins_count);
+    printf("INFO: GLTF file has %d animations\n", (int) gltfData->animations_count);
+    printf("INFO: GLTF file has %d accessors\n", (int) gltfData->accessors_count);
+    printf("INFO: GLTF file has %d buffer views\n", (int) gltfData->buffer_views_count);
+
 
     DEBUG_PRINT("INFO: Initializing game state\n");
     uint32_t *frameBuffer = (uint32_t*) malloc(WIDTH * HEIGHT * sizeof(uint32_t));
@@ -570,7 +928,7 @@ game_state_t* init() {
     game->depthBuffer = depthBuffer;
     game->backgroundColor = {0, 0, 0};
     game->drawLights    = true;
-    game->draw3DObjects =  true;
+    game->draw3DObjects =  false; // TODO: deal with this
     game->draw2DObjects =  false;
     game->diffuseLighting = true;
     game->specularLighting = true;
@@ -582,6 +940,10 @@ game_state_t* init() {
     game->meshes = meshes;
     game->numObjects = numObjects;
     game->objects = objects;
+
+    // GLTF
+    game->gltfData = gltfData;
+    game->gltfPath = gltfPath;
     
     // Lights
     game->numAmbientLights = numAmbientLights;
@@ -785,6 +1147,11 @@ void render(point_t p0, point_t p1, point_t p2, game_state_t* game) {
     if (game->draw3DObjects) {
         DEBUG_PRINT("INFO: Drawing 3D Objects\n");
         drawObjects(game);
+    }
+
+    if (game->gltfData != NULL) {
+        DEBUG_PRINT("INFO: Drawing GLTF scene\n");
+        renderScene(game);
     }
 
     // Draw lights

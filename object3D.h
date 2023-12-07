@@ -85,5 +85,6 @@ camera_t makeCamera(vec3_t translation, mat4x4_t rotation,
 vec3_t meshCenter(vec3_t* vertices, int numVertices);
 float meshBoundsRadius(vec3_t* vertices, int numVertices, vec3_t center);
 mesh_t* loadObjFile(const char* filename, bool flipTextureVertically);
+uint32_t* loadTexture(char* filename, int* textureWidth, int* textureHeight);
 
 #endif

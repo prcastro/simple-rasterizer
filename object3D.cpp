@@ -140,7 +140,8 @@ uint32_t* loadTexture(char* filename, int* textureWidth, int* textureHeight) {
 
     upng_decode(upng);
     uint32_t  a, r, g, b;
-    if (upng_get_error(upng) == UPNG_EOK) {
+    upng_error error = upng_get_error(upng);
+    if (error == UPNG_EOK) {
         *textureWidth = upng_get_width(upng);
         *textureHeight = upng_get_height(upng);
 
@@ -160,7 +161,7 @@ uint32_t* loadTexture(char* filename, int* textureWidth, int* textureHeight) {
             texture[i]  = (a << 24) | (r << 16) | (g << 8) |  b;
         }   
     } else {
-        fprintf(stderr, "ERROR: Couldn't decode texture file\n");
+        fprintf(stderr, "ERROR: Couldn't decode texture file. Error code %d\n", error);
         exit(-1);
     }
 

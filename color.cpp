@@ -1,10 +1,21 @@
 #include "color.h"
 
-color_t colorFromUint32(uint32_t c) {
+color_t colorFromUint32ARGB(uint32_t c) {
     return {
         static_cast<uint8_t>((c & 0x00FF0000) >> 16),
         static_cast<uint8_t>((c & 0x0000FF00) >> 8),
         static_cast<uint8_t>((c & 0x000000FF))
+    };
+}
+
+color_t colorFromUint32RGBA(uint32_t c) {
+    return {
+        // static_cast<uint8_t>((c & 0xFF000000) >> 24),
+        // static_cast<uint8_t>((c & 0x00FF0000) >> 16),
+        // static_cast<uint8_t>((c & 0x0000FF00) >> 8)
+        static_cast<uint8_t>((c & 0x000000FF)),
+        static_cast<uint8_t>((c & 0x0000FF00) >> 8),
+        static_cast<uint8_t>((c & 0x00FF0000) >> 16)
     };
 }
 
